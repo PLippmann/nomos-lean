@@ -64,37 +64,66 @@ class LeanVerifier:
         # Match 'sorry' as a word boundary (not inside identifiers)
         return len(re.findall(r'\bsorry\b', lean_code))
     
-    def _parse_error(self, stderr: str) -> tuple[Optional[str], Optional[int]]:
+    def _parse_error(self, stdout: str, stderr: str) -> tuple[Optional[str], Optional[int]]:
         """
         Parse Lean compiler error output.
         
         Args:
+            stdout: Standard output from lean command (Lean 4 often reports here)
             stderr: Standard error from lean command
             
         Returns:
             Tuple of (error_message, error_line)
         """
-        if not stderr.strip():
+        # Combine stdout and stderr - Lean 4 can output errors to either
+        combined = f"{stdout}\n{stderr}".strip()
+        
+        if not combined:
             return None, None
         
-        # Lean error format: "file.lean:line:col: error: message"
+        # Lean 4 error format: "file.lean:line:col: error: message"
+        # Can appear in either stdout or stderr
         error_match = re.search(
-            r'\.lean:(\d+):\d+:\s*(error|warning):\s*(.+?)(?=\n\S|\Z)',
-            stderr,
+            r'\.lean:(\d+):\d+:\s*(error):\s*(.+?)(?=\n[^\s]|\n\n|\Z)',
+            combined,
             re.DOTALL
         )
         
         if error_match:
             line_num = int(error_match.group(1))
             error_msg = error_match.group(3).strip()
-            return error_msg, line_num
+            # Clean up multiline errors
+            error_msg = ' '.join(error_msg.split())
+            return error_msg[:300], line_num
         
-        # Fallback: return first non-empty line
-        for line in stderr.strip().split('\n'):
-            if line.strip():
-                return line.strip(), None
+        # Also check for "unknown identifier" which is common
+        unknown_match = re.search(
+            r"unknown identifier '([^']+)'",
+            combined
+        )
+        if unknown_match:
+            return f"unknown identifier '{unknown_match.group(1)}'", None
         
-        return stderr.strip()[:500], None
+        # Check for type mismatch
+        type_match = re.search(
+            r'type mismatch\s+(.+?)(?=\nhas type|\Z)',
+            combined,
+            re.DOTALL
+        )
+        if type_match:
+            return f"type mismatch: {type_match.group(1).strip()[:200]}", None
+        
+        # Fallback: find any line with "error:"
+        for line in combined.split('\n'):
+            if 'error:' in line.lower():
+                return line.strip()[:300], None
+        
+        # Last fallback: return first meaningful line
+        for line in combined.strip().split('\n'):
+            if line.strip() and not line.startswith('info:'):
+                return line.strip()[:300], None
+        
+        return "Compilation failed (no specific error message)", None
     
     async def verify_proof(
         self, 
@@ -168,7 +197,7 @@ class LeanVerifier:
                 )
             
             # Parse error
-            error_msg, error_line = self._parse_error(stderr_text)
+            error_msg, error_line = self._parse_error(stdout_text, stderr_text)
             
             return VerificationResult(
                 success=False,
