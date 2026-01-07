@@ -18,6 +18,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Load .env file if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import fire
 import httpx
 from openai import AsyncOpenAI
