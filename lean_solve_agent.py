@@ -152,7 +152,7 @@ class LeanSolveAgent:
         time_limit_hours: float = 3.0,
         max_concurrent: int = 8,
         max_repair_attempts: int = 3,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-reasoner",
         base_url: str = "https://api.deepseek.com/v1",
         problems_filter: Optional[str] = None,
         problems_limit: Optional[int] = None,
@@ -320,9 +320,9 @@ class LeanSolveAgent:
             response = await self._call_llm(messages)
             lean_code = self._extract_lean_code(response)
             
-            # Ensure proper structure
+            # Ensure proper structure - use import Mathlib as safe fallback
             if not lean_code.startswith("import"):
-                lean_code = f"{problem.imports}\n\n{lean_code}"
+                lean_code = "import Mathlib\n\n" + lean_code
             
             problem_state.attempt_count += 1
             self.stats["total_attempts"] += 1
@@ -422,7 +422,7 @@ class LeanSolveAgent:
             lean_code = self._extract_lean_code(response)
             
             if not lean_code.startswith("import"):
-                lean_code = f"{problem.imports}\n\n{lean_code}"
+                lean_code = "import Mathlib\n\n" + lean_code
             
             problem_state.attempt_count += 1
             self.stats["total_attempts"] += 1
@@ -678,7 +678,7 @@ def main(
     time_limit_hours: float = 3.0,
     max_concurrent: int = 8,
     max_repair_attempts: int = 3,
-    model: str = "deepseek-chat",
+    model: str = "deepseek-reasoner",
     base_url: str = "https://api.deepseek.com/v1",
     problems_filter: Optional[str] = None,
     problems_limit: Optional[int] = None,
