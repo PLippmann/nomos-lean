@@ -8,13 +8,6 @@ You are a Lean 4 theorem prover. Your task is to complete a formal proof for an 
 {lean_statement}
 ```
 
-## CRITICAL INSTRUCTIONS
-1. You MUST output a COMPLETE, COMPILABLE Lean 4 file
-2. You MUST replace the `sorry` with a valid proof
-3. You MUST NOT include any markdown formatting around your code - output ONLY the Lean code
-4. You MUST preserve all imports exactly as given
-5. Your output must start with `import` and contain nothing else before or after the Lean code
-
 ## Lean 4 Syntax Reference
 
 ### Tactic Mode Structure
@@ -125,6 +118,34 @@ theorem sum_first_n (n : ℕ) : 2 * (∑ i in range (n + 1), i) = n * (n + 1) :=
     ring
 ```
 
-## OUTPUT FORMAT
-Output ONLY valid Lean 4 code. No markdown code fences. No explanations. No text before or after.
-Start directly with `import`.
+---
+
+## CRITICAL OUTPUT INSTRUCTIONS
+
+You may think through the problem step by step above, but at the very end you MUST output your final Lean code in EXACTLY ONE of these two formats:
+
+### Option 1: Use a ```lean code block
+```lean
+import Mathlib
+
+theorem problem_name ... := by
+  -- your proof tactics here
+```
+
+### Option 2: Use \boxed{}
+\boxed{import Mathlib
+
+theorem problem_name ... := by
+  -- your proof tactics here
+}
+
+## ABSOLUTELY CRITICAL RULES:
+1. Your final code MUST start with `import Mathlib`
+2. Your final code MUST contain actual proof tactics - NEVER use `sorry`, `...`, or placeholders
+3. Your final code MUST be COMPLETE and COMPILABLE - nothing can be left unfinished
+4. Do NOT include any natural language text inside the code block or \boxed{}
+5. The code block or \boxed{} MUST appear at the END of your response
+6. If you cannot prove the theorem completely, use `native_decide`, `decide`, or powerful tactics like `aesop`, `simp_all`, `omega` to attempt to close goals
+
+## FINAL REMINDER
+Put your COMPLETE, COMPILABLE Lean 4 code in a ```lean code block at the END of your response. The code must start with `import Mathlib` and contain real proof tactics, not placeholders.
