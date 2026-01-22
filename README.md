@@ -2,6 +2,15 @@
 
 A Lean 4 formal verification agent for Olympiad mathematics. Generates machine-verifiable proofs and validates them with `lake build` for deterministic correctness.
 
+## Benchmark Results
+
+| Approach | Solved | Rate | Time |
+|----------|--------|------|------|
+| Baseline (single-shot) | 13/100 | 13% | 137 min |
+| **Harness (with repair loop)** | **58/100** | **58%** | 225 min |
+
+*Tested on first 100 PutnamBench problems using `deepseek-reasoner`.*
+
 ## Overview
 
 Nomos-Lean replaces LLM-based scoring with formal verification:
@@ -63,8 +72,21 @@ python lean_solve_agent.py PutnamBench/ --problems_limit=1
 # Run specific problems
 python lean_solve_agent.py PutnamBench/ --problems_filter="1962_a[1-3]"
 
-# Full benchmark (672 problems)
-python lean_solve_agent.py PutnamBench/ --time_limit_hours=3.0 --max_concurrent=8
+# Full benchmark (recommended config: 16 LLM workers + 6 verify workers)
+python lean_solve_agent.py PutnamBench/ \
+    --problems_limit=100 \
+    --max_concurrent=16 \
+    --max_verify_concurrent=6 \
+    --time_limit_hours=4.0
+```
+
+### Baseline (No Repair Loop)
+
+For comparison or quick single-shot runs:
+
+```bash
+# Single-shot baseline (no repair, faster but lower solve rate)
+python baseline_solve.py PutnamBench/ --problems_limit=100 --max_concurrent=4
 ```
 
 ### Options
@@ -74,11 +96,27 @@ python lean_solve_agent.py PutnamBench/ --time_limit_hours=3.0 --max_concurrent=
 | `--problems_limit` | None | Max problems to attempt |
 | `--problems_filter` | None | Regex filter for problem IDs |
 | `--time_limit_hours` | `3.0` | Total time limit |
-| `--max_concurrent` | `8` | Parallel workers |
+| `--max_concurrent` | `32` | Parallel LLM API workers |
+| `--max_verify_concurrent` | `6` | Parallel Lean verifications (keep low to avoid CPU overload) |
 | `--max_repair_attempts` | `3` | Repair loop depth |
 | `--verification_timeout` | `60` | Seconds per verification |
 | `--model` | `deepseek-reasoner` | LLM for proof generation |
 | `--base_url` | DeepSeek API | OpenAI-compatible endpoint |
+
+> **Tip**: Keep `max_verify_concurrent` at 4-8 to prevent Lean compilation timeouts. LLM workers can be higher (16-32) since API calls are I/O-bound.
+
+## Failure Patterns
+
+Analysis of 42 unsolved problems from our 100-problem benchmark:
+
+| Pattern | Count | Example | Notes |
+|---------|-------|---------|-------|
+| **sorry placeholder** | ~40% | `putnam_1962_b6` | Model understands approach but can't complete final step |
+| **Truncated code** (`...`) | ~25% | `putnam_1966_b4` | Extraction failed to get complete proof |
+| **Missing Mathlib lemma** | ~20% | `putnam_1970_b3` | Requires `Bounded` → needs Mathlib API knowledge |
+| **Type mismatch** | ~15% | `putnam_1964_a1` | Valid approach but types don't unify |
+
+**Key insight**: Most failures are mathematical (model can't complete the proof) rather than syntactic. The extraction and repair systems are working; the LLM simply lacks the theorem-proving depth for harder problems.
 
 ## Project Structure
 
