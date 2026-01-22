@@ -150,13 +150,14 @@ class LeanSolveAgent:
         lean_project_dir: str = "lean_project",
         submissions_dir: Optional[str] = None,
         time_limit_hours: float = 3.0,
-        max_concurrent: int = 8,
+        max_concurrent: int = 32,
         max_repair_attempts: int = 3,
         model: str = "deepseek-reasoner",
         base_url: str = "https://api.deepseek.com/v1",
         problems_filter: Optional[str] = None,
         problems_limit: Optional[int] = None,
         verification_timeout: float = 60.0,
+        max_verify_concurrent: int = 6,
     ):
         """
         Initialize the Lean solve agent.
@@ -218,7 +219,8 @@ class LeanSolveAgent:
 
         # State
         self.problems: dict[str, LeanProblemState] = {}
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.semaphore = asyncio.Semaphore(max_concurrent)  # For LLM calls
+        self.verify_semaphore = asyncio.Semaphore(max_verify_concurrent)  # For Lean verification
         self.start_time: float = 0
         self.stopping = False
         self.finalization_started = False
@@ -449,10 +451,12 @@ class LeanSolveAgent:
         submission: LeanSubmission
     ) -> bool:
         """Verify a Lean proof using lake build."""
-        result = await self.verifier.verify_proof(
-            submission.lean_code, 
-            timeout_seconds=self.verification_timeout
-        )
+        # Use verification semaphore to limit concurrent Lean compilations
+        async with self.verify_semaphore:
+            result = await self.verifier.verify_proof(
+                submission.lean_code, 
+                timeout_seconds=self.verification_timeout
+            )
         
         submission.verified = result.success
         submission.error_message = result.error_message
@@ -784,13 +788,14 @@ def main(
     lean_project_dir: str = "lean_project",
     submissions_dir: Optional[str] = None,
     time_limit_hours: float = 3.0,
-    max_concurrent: int = 8,
+    max_concurrent: int = 32,
     max_repair_attempts: int = 3,
     model: str = "deepseek-reasoner",
     base_url: str = "https://api.deepseek.com/v1",
     problems_filter: Optional[str] = None,
     problems_limit: Optional[int] = None,
     verification_timeout: float = 60.0,
+    max_verify_concurrent: int = 6,
 ):
     """
     Run the Lean 4 formal verification agent.
@@ -810,6 +815,7 @@ def main(
         problems_filter: Regex pattern to filter problem IDs
         problems_limit: Max problems to attempt
         verification_timeout: Timeout in seconds for each Lean verification (default: 60)
+        max_verify_concurrent: Max parallel Lean verifications (default: 6)
     """
     agent = LeanSolveAgent(
         problems_dir=problems_dir,
@@ -826,6 +832,7 @@ def main(
         problems_filter=problems_filter,
         problems_limit=problems_limit,
         verification_timeout=verification_timeout,
+        max_verify_concurrent=max_verify_concurrent,
     )
     asyncio.run(agent.run())
 
