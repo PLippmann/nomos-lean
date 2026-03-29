@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -37,6 +38,7 @@ from tenacity import (
 
 from lean_verifier import LeanVerifier, VerificationResult
 from putnam_bench import PutnamBenchLoader, LeanProblem
+from utils import extract_lean_code
 
 
 # === Error Classes ===
@@ -158,10 +160,11 @@ class LeanSolveAgent:
         problems_limit: Optional[int] = None,
         verification_timeout: float = 60.0,
         max_verify_concurrent: int = 6,
+        save_trajectories: bool = True,
     ):
         """
         Initialize the Lean solve agent.
-        
+
         Args:
             problems_dir: Path to PutnamBench repository
             solve_prompt: Path to Lean proof generation prompt
@@ -177,6 +180,7 @@ class LeanSolveAgent:
             problems_filter: Regex filter for problem IDs
             problems_limit: Max problems to load
             verification_timeout: Timeout in seconds for each Lean verification
+            save_trajectories: Write per-problem attempt trajectories to trajectories.jsonl
         """
         self.problems_dir = Path(problems_dir)
         self.lean_project_dir = Path(lean_project_dir)
@@ -184,6 +188,7 @@ class LeanSolveAgent:
         self.problems_filter = problems_filter
         self.problems_limit = problems_limit
         self.verification_timeout = verification_timeout
+        self.save_trajectories = save_trajectories
 
         # Timing
         self.time_limit_seconds = time_limit_hours * 3600
@@ -282,110 +287,8 @@ class LeanSolveAgent:
 
 
     def _extract_lean_code(self, response: str) -> str:
-        """Extract Lean code from response with multiple fallback strategies."""
-        # Strategy 1: Find ```lean ... ``` code blocks (prefer last one)
-        lean_blocks = list(re.finditer(r'```lean\s*(.*?)```', response, re.DOTALL))
-        if lean_blocks:
-            code = lean_blocks[-1].group(1).strip()
-            if code.startswith('import') or 'theorem' in code or 'lemma' in code:
-                return code
-        
-        # Strategy 2: Find ``` ... ``` blocks starting with import
-        import_blocks = list(re.finditer(r'```\s*(import.*?)```', response, re.DOTALL))
-        if import_blocks:
-            code = import_blocks[-1].group(1).strip()
-            return code
-        
-        # Strategy 3: Extract from \boxed{} with proper brace matching
-        boxed_start = response.find('\\boxed{')
-        if boxed_start != -1:
-            content_start = boxed_start + 7  # len('\\boxed{')
-            depth = 1
-            end_idx = len(response)
-            for i, char in enumerate(response[content_start:]):
-                if char == '{':
-                    depth += 1
-                elif char == '}':
-                    depth -= 1
-                    if depth == 0:
-                        end_idx = content_start + i
-                        break
-            code = response[content_start:end_idx].strip()
-            if code.startswith('import') or 'theorem' in code or 'lemma' in code:
-                return code
-        
-        # Strategy 4: Smart line-by-line extraction as last resort
-        lines = response.split('\n')
-        lean_lines = []
-        in_code = False
-        
-        lean_keywords = (
-            'import', 'open', 'theorem', 'lemma', 'def', 'example', 
-            'section', 'namespace', 'set_option', 'variable', 'structure', 
-            'class', 'instance', 'attribute', '@[', 'noncomputable', 
-            'abbrev', 'inductive', '#check', '#eval'
-        )
-        
-        # Patterns that indicate prose (NOT Lean code) - both upper and lowercase
-        prose_starters = (
-            'We ', 'The ', 'This ', 'Let ', 'Now ', 'Since ', 'By ', 
-            'Note ', 'First', 'Second', 'Third', 'Finally', 'Therefore',
-            'However', 'Thus', 'Hence', 'Consider', 'Given', 'Suppose',
-            'In ', 'For ', 'To ', 'If ', 'When ', 'As ', 'From ',
-            'Here ', 'Step ', 'Case ', 'Proof', 'Solution', 'Answer',
-            '**', '##', '# ', '1.', '2.', '3.', '- ', '* ',
-            # Lowercase prose starters
-            'where ', 'and ', 'so ', 'then ', 'but ', 'which ', 'that ',
-            'with ', 'using ', 'because ', 'therefore ', 'hence ',
-        )
-        
-        for line in lines:
-            stripped = line.strip()
-            
-            # Skip empty lines unless we're in code
-            if not stripped:
-                if in_code:
-                    lean_lines.append(line)
-                continue
-            
-            # Check if line starts with prose indicators
-            is_prose = any(stripped.startswith(p) or stripped.lower().startswith(p) for p in prose_starters)
-            
-            # Check if line looks like natural language (more aggressive detection)
-            if not is_prose and len(stripped) > 10:
-                # Sentence-like structure
-                if stripped[-1] in '.?!:' and ' ' in stripped:
-                    words = stripped.split()
-                    # More than 4 words and not starting with Lean keyword
-                    if len(words) > 4 and not any(stripped.startswith(k) for k in lean_keywords):
-                        # Check for common English patterns
-                        common_words = ['is', 'are', 'the', 'of', 'and', 'or', 'to', 'in', 'that', 'which']
-                        word_list = [w.lower().strip('.,;:') for w in words]
-                        if any(w in common_words for w in word_list):
-                            is_prose = True
-            
-            if is_prose:
-                if in_code and lean_lines:
-                    # Hit prose after code - stop here
-                    break
-                continue
-            
-            # Check for Lean keywords to start code block
-            if stripped.startswith(lean_keywords) or stripped.startswith('--') or stripped.startswith('/-'):
-                in_code = True
-                lean_lines.append(line)
-            elif in_code:
-                lean_lines.append(line)
-        
-        if lean_lines:
-            result = '\n'.join(lean_lines).strip()
-            # Post-process: remove trailing placeholder patterns
-            result = re.sub(r'\s*:=\s*\.\.\.\s*$', ' := by sorry', result)
-            result = re.sub(r'\s+\.\.\.\s*$', '', result)
-            return result
-        
-        # Return empty rather than prose
-        return ""
+        """Extract Lean code from LLM response. See utils.extract_lean_code for strategies."""
+        return extract_lean_code(response)
 
 
 
@@ -548,53 +451,96 @@ class LeanSolveAgent:
             safeprint(f"[red]Error repairing {problem.problem_id}: {e}[/red]")
             return None
 
+    # === Trajectory Logging ===
+
+    def _append_trajectory_event(
+        self,
+        problem_state: LeanProblemState,
+        submission: LeanSubmission,
+        event_type: str,  # "generate" | "repair"
+    ) -> None:
+        """
+        Append one attempt record to trajectories.jsonl.
+
+        Each record captures the reward signal at that step:
+          - reward = 1.0  if the proof is formally verified (hard reward)
+          - reward = soft_score ∈ [0, 0.9]  if verification failed (LLM-scored reward)
+
+        This is the core RLVR loop: deterministic Lean verification provides the
+        ground-truth reward; the soft score bridges the gap for incomplete proofs.
+        """
+        if not self.save_trajectories:
+            return
+        self.submissions_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "problem_id": problem_state.problem.problem_id,
+            "attempt_num": submission.attempt_num,
+            "event_type": event_type,
+            "verified": submission.verified,
+            # The RLVR reward signal: 1.0 for verified, soft_score otherwise
+            "reward": 1.0 if submission.verified else submission.soft_score,
+            "error_message": submission.error_message,
+            "error_line": submission.error_line,
+            "sorry_count": submission.sorry_count,
+            "llm_feedback": submission.llm_feedback,
+            "lean_code": submission.lean_code,
+            "timestamp": time.time(),
+        }
+        traj_path = self.submissions_dir / "trajectories.jsonl"
+        with open(traj_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
     # === Worker Logic ===
 
     async def solve_worker(self, problem_state: LeanProblemState) -> bool:
         """Main worker loop: generate, verify, repair."""
         if problem_state.solved:
             return True
-        
+
         # Generate initial proof
         submission = await self.generate_proof(problem_state)
         if submission is None:
             return False
-        
+
         problem_state.submissions.append(submission)
-        
+
         # Verify
         success = await self.verify_submission(problem_state, submission)
         if success:
             problem_state.verified_submissions.append(submission)
             problem_state.solved = True
+            self._append_trajectory_event(problem_state, submission, "generate")
             return True
-        
+
         # Score and get feedback for repair
         score, feedback = await self.score_partial_proof(problem_state, submission)
         submission.soft_score = score
         submission.llm_feedback = feedback
-        
+        self._append_trajectory_event(problem_state, submission, "generate")
+
         # Repair loop
         for i in range(self.max_repair_attempts):
             if problem_state.solved or self._should_stop_solving():
                 return problem_state.solved
-            
+
             submission = await self.repair_submission(problem_state, submission, feedback)
             if submission is None:
                 break
-            
+
             problem_state.submissions.append(submission)
-            
+
             if await self.verify_submission(problem_state, submission):
                 problem_state.verified_submissions.append(submission)
                 problem_state.solved = True
+                self._append_trajectory_event(problem_state, submission, "repair")
                 return True
-            
+
             # Get new feedback for next repair iteration
             score, feedback = await self.score_partial_proof(problem_state, submission)
             submission.soft_score = score
             submission.llm_feedback = feedback
-        
+            self._append_trajectory_event(problem_state, submission, "repair")
+
         # Failed all repair attempts
         if submission:
             problem_state.failed_submissions.append(submission)
@@ -703,17 +649,42 @@ class LeanSolveAgent:
         summary_path = self.submissions_dir / "SUMMARY.md"
         solved = sum(1 for p in self.problems.values() if p.solved)
         total = len(self.problems)
-        
-        summary = f"# Lean Solve Agent Results\n\n"
+
+        # RLVR metrics: how many problems were solved only after repair?
+        solved_on_first = sum(
+            1 for ps in self.problems.values()
+            if ps.solved and ps.verified_submissions and ps.verified_submissions[0].attempt_num == 1
+        )
+        solved_by_repair = solved - solved_on_first
+
+        # Average attempts across all attempted problems
+        attempted = [ps for ps in self.problems.values() if ps.attempt_count > 0]
+        avg_attempts = sum(ps.attempt_count for ps in attempted) / len(attempted) if attempted else 0.0
+
+        # Repair success rate: among problems that needed repair, how many got solved?
+        needed_repair = [ps for ps in self.problems.values() if ps.attempt_count > 1]
+        repair_solved = sum(1 for ps in needed_repair if ps.solved)
+        repair_rate = repair_solved / len(needed_repair) if needed_repair else 0.0
+
+        summary = "# Lean Solve Agent Results\n\n"
         summary += f"- **Solved**: {solved}/{total} ({100*solved/total:.1f}%)\n"
+        summary += f"- **Solved on first attempt**: {solved_on_first}\n"
+        summary += f"- **Solved after repair**: {solved_by_repair}\n"
+        summary += f"- **Repair success rate**: {100*repair_rate:.1f}% ({repair_solved}/{len(needed_repair)} problems that needed repair)\n"
+        summary += f"- **Avg attempts per problem**: {avg_attempts:.1f}\n"
         summary += f"- **Total Attempts**: {self.stats['total_attempts']}\n"
-        summary += f"- **API Calls**: {self.stats['api_calls']}\n\n"
+        summary += f"- **API Calls**: {self.stats['api_calls']}\n"
+        if self.save_trajectories:
+            summary += f"- **Trajectories**: `trajectories.jsonl` (per-attempt reward signals)\n"
+        summary += "\n"
         summary += "## Problems\n\n"
-        
+
         for pid, ps in sorted(self.problems.items()):
             status = "✓" if ps.solved else "✗"
-            summary += f"- {status} `{pid}`: {ps.attempt_count} attempts\n"
-        
+            best_score = max((s.soft_score for s in ps.submissions), default=0.0)
+            score_str = "" if ps.solved else f" (best score: {best_score:.2f})"
+            summary += f"- {status} `{pid}`: {ps.attempt_count} attempts{score_str}\n"
+
         summary_path.write_text(summary)
         safeprint(f"[bold green]Summary written to {summary_path}[/bold green]")
 
@@ -796,10 +767,11 @@ def main(
     problems_limit: Optional[int] = None,
     verification_timeout: float = 60.0,
     max_verify_concurrent: int = 6,
+    save_trajectories: bool = True,
 ):
     """
     Run the Lean 4 formal verification agent.
-    
+
     Args:
         problems_dir: Path to PutnamBench directory (containing lean4/src/)
         solve_prompt: Path to proof generation prompt
@@ -810,12 +782,13 @@ def main(
         time_limit_hours: Time limit in hours
         max_concurrent: Max parallel API requests
         max_repair_attempts: Max repair iterations per attempt
-        model: LLM model name (default: deepseek-chat)
+        model: LLM model name (default: deepseek-reasoner)
         base_url: API endpoint
         problems_filter: Regex pattern to filter problem IDs
         problems_limit: Max problems to attempt
         verification_timeout: Timeout in seconds for each Lean verification (default: 60)
         max_verify_concurrent: Max parallel Lean verifications (default: 6)
+        save_trajectories: Write per-attempt reward trajectories to trajectories.jsonl
     """
     agent = LeanSolveAgent(
         problems_dir=problems_dir,
@@ -833,6 +806,7 @@ def main(
         problems_limit=problems_limit,
         verification_timeout=verification_timeout,
         max_verify_concurrent=max_verify_concurrent,
+        save_trajectories=save_trajectories,
     )
     asyncio.run(agent.run())
 

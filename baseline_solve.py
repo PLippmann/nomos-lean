@@ -14,7 +14,6 @@ Usage:
 
 import asyncio
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,6 +33,7 @@ from openai import AsyncOpenAI
 
 from lean_verifier import LeanVerifier, VerificationResult
 from putnam_bench import PutnamBenchLoader, LeanProblem
+from utils import extract_lean_code
 
 
 @dataclass
@@ -167,110 +167,8 @@ class BaselineSolveAgent:
         return ""
 
     def _extract_lean_code(self, response: str) -> str:
-        """Extract Lean code from response with multiple fallback strategies."""
-        # Strategy 1: Find ```lean ... ``` code blocks (prefer last one)
-        lean_blocks = list(re.finditer(r'```lean\s*(.*?)```', response, re.DOTALL))
-        if lean_blocks:
-            code = lean_blocks[-1].group(1).strip()
-            if code.startswith('import') or 'theorem' in code or 'lemma' in code:
-                return code
-        
-        # Strategy 2: Find ``` ... ``` blocks starting with import
-        import_blocks = list(re.finditer(r'```\s*(import.*?)```', response, re.DOTALL))
-        if import_blocks:
-            code = import_blocks[-1].group(1).strip()
-            return code
-        
-        # Strategy 3: Extract from \boxed{} with proper brace matching
-        boxed_start = response.find('\\boxed{')
-        if boxed_start != -1:
-            content_start = boxed_start + 7  # len('\\boxed{')
-            depth = 1
-            end_idx = len(response)
-            for i, char in enumerate(response[content_start:]):
-                if char == '{':
-                    depth += 1
-                elif char == '}':
-                    depth -= 1
-                    if depth == 0:
-                        end_idx = content_start + i
-                        break
-            code = response[content_start:end_idx].strip()
-            if code.startswith('import') or 'theorem' in code or 'lemma' in code:
-                return code
-        
-        # Strategy 4: Smart line-by-line extraction as last resort
-        lines = response.split('\n')
-        lean_lines = []
-        in_code = False
-        
-        lean_keywords = (
-            'import', 'open', 'theorem', 'lemma', 'def', 'example', 
-            'section', 'namespace', 'set_option', 'variable', 'structure', 
-            'class', 'instance', 'attribute', '@[', 'noncomputable', 
-            'abbrev', 'inductive', '#check', '#eval'
-        )
-        
-        # Patterns that indicate prose (NOT Lean code) - both upper and lowercase
-        prose_starters = (
-            'We ', 'The ', 'This ', 'Let ', 'Now ', 'Since ', 'By ', 
-            'Note ', 'First', 'Second', 'Third', 'Finally', 'Therefore',
-            'However', 'Thus', 'Hence', 'Consider', 'Given', 'Suppose',
-            'In ', 'For ', 'To ', 'If ', 'When ', 'As ', 'From ',
-            'Here ', 'Step ', 'Case ', 'Proof', 'Solution', 'Answer',
-            '**', '##', '# ', '1.', '2.', '3.', '- ', '* ',
-            # Lowercase prose starters
-            'where ', 'and ', 'so ', 'then ', 'but ', 'which ', 'that ',
-            'with ', 'using ', 'because ', 'therefore ', 'hence ',
-        )
-        
-        for line in lines:
-            stripped = line.strip()
-            
-            # Skip empty lines unless we're in code
-            if not stripped:
-                if in_code:
-                    lean_lines.append(line)
-                continue
-            
-            # Check if line starts with prose indicators
-            is_prose = any(stripped.startswith(p) or stripped.lower().startswith(p) for p in prose_starters)
-            
-            # Check if line looks like natural language (more aggressive detection)
-            if not is_prose and len(stripped) > 10:
-                # Sentence-like structure
-                if stripped[-1] in '.?!:' and ' ' in stripped:
-                    words = stripped.split()
-                    # More than 4 words and not starting with Lean keyword
-                    if len(words) > 4 and not any(stripped.startswith(k) for k in lean_keywords):
-                        # Check for common English patterns
-                        common_words = ['is', 'are', 'the', 'of', 'and', 'or', 'to', 'in', 'that', 'which']
-                        word_list = [w.lower().strip('.,;:') for w in words]
-                        if any(w in common_words for w in word_list):
-                            is_prose = True
-            
-            if is_prose:
-                if in_code and lean_lines:
-                    # Hit prose after code - stop here
-                    break
-                continue
-            
-            # Check for Lean keywords to start code block
-            if stripped.startswith(lean_keywords) or stripped.startswith('--') or stripped.startswith('/-'):
-                in_code = True
-                lean_lines.append(line)
-            elif in_code:
-                lean_lines.append(line)
-        
-        if lean_lines:
-            result = '\n'.join(lean_lines).strip()
-            # Post-process: remove trailing placeholder patterns
-            result = re.sub(r'\s*:=\s*\.\.\.\s*$', ' := by sorry', result)
-            result = re.sub(r'\s+\.\.\.\s*$', '', result)
-            return result
-        
-        # Return empty rather than prose
-        return ""
+        """Extract Lean code from LLM response. See utils.extract_lean_code for strategies."""
+        return extract_lean_code(response)
 
 
 

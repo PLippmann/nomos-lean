@@ -49,9 +49,11 @@ Fix the proof based on the error message and feedback above.
 
 ## CRITICAL INSTRUCTIONS
 1. Output a COMPLETE, COMPILABLE Lean 4 file
-2. Do not output markdown formatting - ONLY the Lean code
-3. Start directly with `import`
+2. Wrap your final code in a single ```lean ... ``` code block
+3. The code MUST start with `import Mathlib`
 4. Address the specific error mentioned above
+5. Do NOT use `sorry`, `...`, or any other placeholders
 
 ## OUTPUT FORMAT
-Output ONLY valid Lean 4 code. No markdown code fences. No explanations.
+Put your complete, fixed Lean 4 code in a ```lean code block at the END of your response.
+You may briefly explain your fix before the code block, but the code block must be last.
